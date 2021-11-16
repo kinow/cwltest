@@ -15,34 +15,36 @@
 #
 # Contact: common-workflow-language@googlegroups.com
 
-# make pep8 to check for basic Python code compliance
-# make autopep8 to fix most pep8 errors
+# make format to fix most python formatting errors
 # make pylint to check Python code for enhanced compliance including naming
 #  and documentation
 # make coverage-report to check coverage of the python scripts by the tests
 
 MODULE=cwltest
+PACKAGE=cwltest
 
 # `SHELL=bash` doesn't work for some, so don't use BASH-isms like
 # `[[` conditional expressions.
 PYSOURCES=$(wildcard ${MODULE}/**.py tests/*.py) setup.py
-DEVPKGS=pep8 diff_cover autopep8 pylint coverage pep257 flake8 pytest
-DEBDEVPKGS=pep8 python-autopep8 pylint python-coverage pep257 sloccount python-flake8
-VERSION=1.0.$(shell date +%Y%m%d%H%M%S --utc --date=`git log --first-parent \
-	--max-count=1 --format=format:%cI`)
-mkfile_dir := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
+DEVPKGS=diff_cover black pylint pep257 pydocstyle flake8 tox tox-pyenv \
+	isort wheel autoflake flake8-bugbear pyupgrade bandit \
+	-rtest-requirements.txt -rmypy-requirements.txt
+DEBDEVPKGS=pep8 python-autopep8 pylint python-coverage pydocstyle sloccount \
+	   python-flake8 python-mock shellcheck
+VERSION=2.2.$(shell TZ=UTC git log --first-parent --max-count=1 \
+	--format=format:%cd --date=format-local:%Y%m%d%H%M%S)
 
 ## all         : default task
-all: FORCE
-	pip install -e .
+all: dev
 
 ## help        : print this help message and exit
 help: Makefile
 	@sed -n 's/^##//p' $<
 
-install-dependencies: install-dep
 ## install-dep : install most of the development dependencies via pip
-install-dep:
+install-dep: install-dependencies
+
+install-dependencies: FORCE
 	pip install --upgrade $(DEVPKGS)
 	pip install -r requirements.txt
 
@@ -50,132 +52,136 @@ install-dep:
 install-deb-dep:
 	sudo apt-get install $(DEBDEVPKGS)
 
-## install     : install the ${MODULE} module and schema-salad-tool
+## install     : install the ${MODULE} module and cwltest
 install: FORCE
 	pip install .
+
+## dev     : install the ${MODULE} module in dev mode
+dev: install-dep
+	pip install -e .
 
 ## dist        : create a module package for distribution
 dist: dist/${MODULE}-$(VERSION).tar.gz
 
 dist/${MODULE}-$(VERSION).tar.gz: $(SOURCES)
-	./setup.py sdist bdist_wheel
+	python setup.py sdist bdist_wheel
 
 ## clean       : clean up all temporary / machine-generated files
 clean: FORCE
 	rm -f ${MODILE}/*.pyc tests/*.pyc
-	./setup.py clean --all || true
+	python setup.py clean --all || true
 	rm -Rf .coverage
 	rm -f diff-cover.html
 
-## pep8        : check Python code style
-pep8: $(PYSOURCES)
-	pep8 --exclude=_version.py  --show-source --show-pep8 $^ || true
+# Linting and code style related targets
+## sorting imports using isort: https://github.com/timothycrosley/isort
+sort_imports: $(PYSOURCES)
+	isort $^
 
-pep8_report.txt: $(PYSOURCES)
-	pep8 --exclude=_version.py $^ > pep8_report.txt || true
+remove_unused_imports: $(filter-out schema_salad/metaschema.py,$(PYSOURCES))
+	autoflake --in-place --remove-all-unused-imports $^
 
-diff_pep8_report: pep8_report.txt
-	diff-quality --violations=pep8 pep8_report.txt
+pep257: pydocstyle
+## pydocstyle      : check Python code style
+pydocstyle: $(PYSOURCES)
+	pydocstyle --add-ignore=D100,D101,D102,D103 $^ || true
 
-## pep257      : check Python code style
-pep257: $(PYSOURCES)
-	pep257 --ignore=D100,D101,D102,D103 $^ || true
+pydocstyle_report.txt: $(PYSOURCES)
+	pydocstyle setup.py $^ > $@ 2>&1 || true
 
-pep257_report.txt: $(PYSOURCES)
-	pep257 setup.py $^ > pep257_report.txt 2>&1 || true
+diff_pydocstyle_report: pydocstyle_report.txt
+	diff-quality --compare-branch=main --violations=pydocstyle --fail-under=100 $^
 
-diff_pep257_report: pep257_report.txt
-	diff-quality --violations=pep8 pep257_report.txt
+## format      : check/fix all code indentation and formatting (runs black)
+format:
+	black setup.py cwltest setup.py
 
-## autopep8    : fix most Python code indentation and formatting
-autopep8: $(PYSOURCES)
-	autopep8 --recursive --in-place --ignore E309 $^
-
-# A command to automatically run astyle and autopep8 on appropriate files
-## format      : check/fix all code indentation and formatting (runs autopep8)
-format: autopep8
-	# Do nothing
+format-check:
+	black --diff --check setup.py cwltest
 
 ## pylint      : run static code analysis on Python code
 pylint: $(PYSOURCES)
 	pylint --msg-template="{path}:{line}: [{msg_id}({symbol}), {obj}] {msg}" \
-                $^ || true
+                $^ -j0|| true
 
-pylint_report.txt: ${PYSOURCES}
+pylint_report.txt: $(PYSOURCES)
 	pylint --msg-template="{path}:{line}: [{msg_id}({symbol}), {obj}] {msg}" \
-		$^ > pylint_report.txt || true
+		$^ -j0> $@ || true
 
 diff_pylint_report: pylint_report.txt
 	diff-quality --violations=pylint pylint_report.txt
 
 .coverage: $(PYSOURCES) all
-	coverage run ./setup.py test
+	python setup.py test --addopts "--cov --cov-config=.coveragerc --cov-report= ${PYTEST_EXTRA}"
 
 coverage.xml: .coverage
-	python-coverage xml
+	coverage xml
 
 coverage.html: htmlcov/index.html
 
 htmlcov/index.html: .coverage
-	python-coverage html
+	coverage html
 	@echo Test coverage of the Python code is now in htmlcov/index.html
 
 coverage-report: .coverage
-	python-coverage report
+	coverage report
 
-diff-cover: coverage-gcovr.xml coverage.xml
-	diff-cover coverage-gcovr.xml coverage.xml
+diff-cover: coverage.xml
+	diff-cover $^
 
-diff-cover.html: coverage-gcovr.xml coverage.xml
-	diff-cover coverage-gcovr.xml coverage.xml \
-		--html-report diff-cover.html
+diff-cover.html: coverage.xml
+	diff-cover $^ --html-report $@
 
 ## test        : run the ${MODULE} test suite
-test: all
-	./setup.py test
+test: $(PYSOURCES) all
+	python setup.py test ${PYTEST_EXTRA}
 
-sloccount.sc: ${PYSOURCES} Makefile
-	sloccount --duplicates --wide --details $^ > sloccount.sc
+## testcov     : run the ${MODULE} test suite and collect coverage
+testcov: $(PYSOURCES)
+	python setup.py test --addopts "--cov" ${PYTEST_EXTRA}
+
+sloccount.sc: $(PYSOURCES) Makefile
+	sloccount --duplicates --wide --details $^ > $@
 
 ## sloccount   : count lines of code
-sloccount: ${PYSOURCES} Makefile
+sloccount: $(PYSOURCES) Makefile
 	sloccount $^
 
 list-author-emails:
 	@echo 'name, E-Mail Address'
 	@git log --format='%aN,%aE' | sort -u | grep -v 'root'
 
-mypy2: ${PYSOURCES}
-	rm -Rf typeshed/2.7/ruamel/yaml
-	ln -s $(shell python -c 'from __future__ import print_function; import ruamel.yaml; import os.path; print(os.path.dirname(ruamel.yaml.__file__))') \
-		typeshed/2.7/ruamel/yaml
-	rm -Rf typeshed/2.7/schema_salad
-	ln -s $(shell python -c 'from __future__ import print_function; import schema_salad; import os.path; print(os.path.dirname(schema_salad.__file__))') \
-		typeshed/2.7/schema_salad
-	MYPYPATH=typeshed/2.7:typeshed/2and3 mypy --py2 --disallow-untyped-calls \
-		 --warn-redundant-casts --warn-unused-ignores \
-		 ${MODULE}
+mypy3: mypy
+mypy: $(filter-out setup.py gittagger.py,$(PYSOURCES))
+	if ! test -f $(shell python3 -c 'import ruamel.yaml; import os.path; print(os.path.dirname(ruamel.yaml.__file__))')/py.typed ; \
+	then \
+		rm -Rf typeshed/ruamel/yaml ; \
+		ln -s $(shell python3 -c 'import ruamel.yaml; import os.path; print(os.path.dirname(ruamel.yaml.__file__))') \
+			typeshed/ruamel/ ; \
+	fi  # if minimally required ruamel.yaml version is 0.15.99 or greater, than the above can be removed
+	MYPYPATH=$$MYPYPATH:typeshed mypy $^
 
-mypy3: ${PYSOURCES}
-	rm -Rf typeshed/2and3/ruamel/yaml
-	ln -s $(shell python3 -c 'from __future__ import print_function; import ruamel.yaml; import os.path; print(os.path.dirname(ruamel.yaml.__file__))') \
-		typeshed/2and3/ruamel/yaml
-	rm -Rf typeshed/2and3/schema_salad
-	ln -s $(shell python3 -c 'from __future__ import print_function; import schema_salad; import os.path; print(os.path.dirname(schema_salad.__file__))') \
-		typeshed/2and3/schema_salad
-	MYPYPATH=$$MYPYPATH:typeshed/3:typeshed/2and3 mypy --disallow-untyped-calls \
-		 --warn-redundant-casts \
-		 ${MODULE}
+pyupgrade: $(filter-out schema_salad/metaschema.py,$(PYSOURCES))
+	pyupgrade --exit-zero-even-if-changed --py36-plus $^
 
-release: FORCE
-	PYVER=2.7 ./release-test.sh
-	PYVER=3 ./release-test.sh
-	. testenv2.7_2/bin/activate && \
-		testenv2.7_2/src/${MODULE}/setup.py sdist bdist_wheel
-	. testenv2.7_2/bin/activate && \
+release-test: FORCE
+	git diff-index --quiet HEAD -- || ( echo You have uncommited changes, please commit them and try again; false )
+	./release-test.sh
+
+release: release-test
+	. testenv2/bin/activate && \
+		python testenv2/src/${PACKAGE}/setup.py sdist bdist_wheel
+	. testenv2/bin/activate && \
 		pip install twine && \
-		twine upload testenv2.7_2/src/${MODULE}/dist/* \
-		             testenv3_2/src/${MODULE}/dist/*whl && \
+		twine upload testenv2/src/${PACKAGE}/dist/* && \
 		git tag ${VERSION} && git push --tags
 
+flake8: $(PYSOURCES)
+	flake8 $^
+
 FORCE:
+
+# Use this to print the value of a Makefile variable
+# Example `make print-VERSION`
+# From https://www.cmcrossroads.com/article/printing-value-makefile-variable
+print-%  : ; @echo $* = $($*)
