@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+"""Run CWL descriptions with a cwl-runner, and look for expected output."""
 
 import argparse
 import json
@@ -13,7 +14,8 @@ import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from shlex import quote
-from typing import Any, Dict, List, Optional, Set, Union
+from typing import cast, Any, Dict, Iterable, List, Optional, Set, Tuple, Union
+from typing_extensions import overload, Literal
 
 import junit_xml
 import pkg_resources  # part of setuptools
@@ -40,22 +42,22 @@ DEFAULT_TIMEOUT = 600  # 10 minutes
 
 if sys.stderr.isatty():
     PREFIX = "\r"
-    SUFFIX=''
+    SUFFIX = ""
 else:
-    PREFIX=''
-    SUFFIX= "\n"
+    PREFIX = ""
+    SUFFIX = "\n"
 
 templock = threading.Lock()
 
 
 def prepare_test_command(
-    tool,  # type: str
-    args,  # type: List[str]
-    testargs,  # type: Optional[List[str]]
-    test,  # type: Dict[str, str]
-    cwd,  # type: str
-    verbose=False,  # type: bool
-):  # type: (...) -> List[str]
+    tool: str,
+    args: List[str],
+    testargs: Optional[List[str]],
+    test: Dict[str, str],
+    cwd: str,
+    verbose: Optional[bool] = False,
+) -> List[str]:
     """Turn the test into a command line."""
     test_command = [tool]
     test_command.extend(args)
@@ -98,72 +100,102 @@ def prepare_test_command(
 
 
 def run_test(
-    args,  # type: argparse.Namespace
-    test,  # type: Dict[str, str]
-    test_number,  # type: int
-    total_tests,  # type: int
-    timeout,  # type: int
-    junit_verbose=False,  # type: bool
-    verbose=False,  # type: bool
-):  # type: (...) -> TestResult
+    args: argparse.Namespace,
+    test: Dict[str, str],
+    test_number: int,
+    total_tests: int,
+    timeout: int,
+    junit_verbose: Optional[bool] = False,
+    verbose: Optional[bool] = False,
+) -> TestResult:
 
     if test.get("short_name"):
         sys.stderr.write(
             "%sTest [%i/%i] %s: %s%s\n"
-            % (PREFIX, test_number, total_tests, test.get("short_name"),
-               test.get("doc"), SUFFIX))
+            % (
+                PREFIX,
+                test_number,
+                total_tests,
+                test.get("short_name"),
+                test.get("doc"),
+                SUFFIX,
+            )
+        )
     else:
         sys.stderr.write(
             "%sTest [%i/%i] %s%s\n"
-            % (PREFIX, test_number, total_tests, test.get("doc"), SUFFIX))
+            % (PREFIX, test_number, total_tests, test.get("doc"), SUFFIX)
+        )
     sys.stderr.flush()
-    return run_test_plain(args, test, timeout)
+    return run_test_plain(vars(args), test, timeout, test_number)
 
 
-def run_test_plain(args,         # type: argparse.Namespace
-                   test,         # type: Dict[str, str]
-                   timeout       # type: int
-                  ):  # type: (...) -> TestResult
-
+def run_test_plain(
+    args: Dict[str, Any],
+    test: Dict[str, str],
+    timeout: int,
+    test_number: Optional[int] = None,
+) -> TestResult:
+    """Plain test runner."""
     global templock
 
-    out = {}  # type: Dict[str,Any]
+    out: Dict[str, Any] = {}
     outdir = outstr = outerr = ""
-    test_command = []  # type: List[str]
+    test_command: List[str] = []
     duration = 0.0
     try:
-        process = None  # type: Optional[subprocess.Popen[str]]
+        process: Optional[subprocess.Popen[str]] = None
         cwd = os.getcwd()
         test_command = prepare_test_command(
-            args['tool'], args['args'], args['testargs'], test)
+            args["tool"],
+            args["args"],
+            args["testargs"],
+            test,
+            cwd,
+            args.get("verbose", False),
+        )
 
         start_time = time.time()
-        stderr = subprocess.PIPE if not args['verbose'] else None
-        process = subprocess.Popen(test_command, stdout=subprocess.PIPE, stderr=stderr)
+        stderr = subprocess.PIPE if not args["verbose"] else None
+        _logger.debug("Test command: %s.", test_command)
+        process = subprocess.Popen(  # nosec
+            test_command, stdout=subprocess.PIPE, stderr=stderr, universal_newlines=True
+        )
         outstr, outerr = process.communicate(timeout=timeout)
-        for out in outstr, outerr:
-            if out:
-                out = out.decode('utf-8')
         return_code = process.poll()
         duration = time.time() - start_time
         if return_code:
             raise subprocess.CalledProcessError(return_code, " ".join(test_command))
 
-        out = json.loads(outstr)
+        _logger.debug('outstr: "%s".', outstr)
+        out = json.loads(outstr) if outstr else {}
     except subprocess.CalledProcessError as err:
-        if err.returncode == UNSUPPORTED_FEATURE:
-            return TestResult(UNSUPPORTED_FEATURE, outstr, outerr, duration,
-                    args['classname'])
-        if test.get("should_fail", False):
-            return TestResult(0, outstr, outerr, duration, args['classname'])
-        _logger.error("""Test failed: %s""", " ".join([quote(tc) for tc in test_command]))
+        if err.returncode == UNSUPPORTED_FEATURE and REQUIRED not in test.get(
+            "tags", ["required"]
+        ):
+            return TestResult(
+                UNSUPPORTED_FEATURE, outstr, outerr, duration, args["classname"]
+            )
+        if test_number:
+            _logger.error(
+                """Test %i failed: %s""",
+                test_number,
+                " ".join([quote(tc) for tc in test_command]),
+            )
+        else:
+            _logger.error(
+                """Test failed: %s""",
+                " ".join([quote(tc) for tc in test_command]),
+            )
         _logger.error(test.get("doc"))
         if err.returncode == UNSUPPORTED_FEATURE:
             _logger.error("Does not support required feature")
         else:
             _logger.error("Returned non-zero")
         _logger.error(outerr)
-        return TestResult(1, outstr, outerr, duration, args['classname'], str(err))
+        if test.get("should_fail", False):
+            return TestResult(0, outstr, outerr, duration, args["classname"])
+        return TestResult(1, outstr, outerr, duration, args["classname"], str(err))
     except (yamlscanner.ScannerError, TypeError) as err:
         _logger.error(
             """Test %i failed: %s""",
@@ -192,7 +224,9 @@ def run_test_plain(args,         # type: argparse.Namespace
         if process:
             process.kill()
             outstr, outerr = process.communicate()
-        return TestResult(2, outstr, outerr, timeout, args['classname'], "Test timed out")
+        return TestResult(
+            2, outstr, outerr, timeout, args["classname"], "Test timed out"
+        )
     finally:
         if process is not None and process.returncode is None:
             _logger.error("""Terminating lingering process""")
@@ -214,7 +248,7 @@ def run_test_plain(args,         # type: argparse.Namespace
         )
         _logger.warning(test.get("doc"))
         _logger.warning("Returned zero but it should be non-zero")
-        return TestResult(1, outstr, outerr, duration, args['classname'])
+        return TestResult(1, outstr, outerr, duration, args["classname"])
 
     try:
         compare(test.get("output"), out)
@@ -231,11 +265,18 @@ def run_test_plain(args,         # type: argparse.Namespace
     if outdir:
         shutil.rmtree(outdir, True)
 
-    return TestResult((1 if fail_message else 0), outstr, outerr, duration,
-                      args['classname'], fail_message)
+    return TestResult(
+        (1 if fail_message else 0),
+        outstr,
+        outerr,
+        duration,
+        args["classname"],
+        fail_message,
+    )
 
 
-def arg_parser():  # type: () -> argparse.ArgumentParser
+def arg_parser() -> argparse.ArgumentParser:
+    """Build our command line interface."""
     parser = argparse.ArgumentParser(
         description="Common Workflow Language testing framework"
     )
@@ -349,11 +390,151 @@ def expand_number_range(nr: str) -> List[int]:
     return ans
 
 
-def main():  # type: () -> int
+def load_and_validate_tests(path: str) -> List[Dict[str, Any]]:
+    """Load and valide the given tests against the cwltest schema."""
+    schema_resource = pkg_resources.resource_stream(__name__, "cwltest-schema.yml")
+    cache: Optional[Dict[str, Union[str, Graph, bool]]] = {
+        "https://w3id.org/cwl/cwltest/cwltest-schema.yml": schema_resource.read().decode(
+            "utf-8"
+        )
+    }
+    (document_loader, avsc_names, _, _,) = schema_salad.schema.load_schema(
+        "https://w3id.org/cwl/cwltest/cwltest-schema.yml", cache=cache
+    )
+    if not isinstance(avsc_names, schema_salad.avro.schema.Names):
+        raise avsc_names
 
+    tests, _ = schema_salad.schema.load_and_validate(
+        document_loader, avsc_names, path, True
+    )
+    return cast(List[Dict[str, Any]], tests)
+
+
+@overload
+def parse_results(
+    results: Iterable[TestResult],
+    tests: List[Dict[str, Any]],
+    report: Literal[None] = None,
+) -> Tuple[
+    int,  # total
+    int,  # passed
+    int,  # failures
+    int,  # unsupported
+    Dict[str, int],
+    Dict[str, int],
+    Dict[str, int],
+    Dict[str, int],
+    Literal[None],
+]:
+    ...
+
+
+@overload
+def parse_results(
+    results: Iterable[TestResult],
+    tests: List[Dict[str, Any]],
+    report: junit_xml.TestSuite,
+) -> Tuple[
+    int,  # total
+    int,  # passed
+    int,  # failures
+    int,  # unsupported
+    Dict[str, int],
+    Dict[str, int],
+    Dict[str, int],
+    Dict[str, int],
+    junit_xml.TestSuite,
+]:
+    ...
+
+
+def parse_results(
+    results: Iterable[TestResult],
+    tests: List[Dict[str, Any]],
+    report: Optional[junit_xml.TestSuite] = None,
+) -> Tuple[
+    int,  # total
+    int,  # passed
+    int,  # failures
+    int,  # unsupported
+    Dict[str, int],
+    Dict[str, int],
+    Dict[str, int],
+    Dict[str, int],
+    Optional[junit_xml.TestSuite],
+]:
+    """
+    Parse the results and return statistics and an optional report.
+
+    Returns the total number of tests, dictionary of test counts
+    (total, passed, failed, unsupported) by tag, and a jUnit XML report.
+    """
+    total = 0
+    passed = 0
+    failures = 0
+    unsupported = 0
+    ntotal: Dict[str, int] = defaultdict(int)
+    nfailures: Dict[str, int] = defaultdict(int)
+    nunsupported: Dict[str, int] = defaultdict(int)
+    npassed: Dict[str, int] = defaultdict(int)
+
+    for i, test_result in enumerate(results):
+        test_case = test_result.create_test_case(tests[i])
+        url = f"cwltest:{report.name}#{i + 1}" if report else "cwltest:#{i + 1}"
+        test_case.url = url
+        total += 1
+        tags = tests[i].get("tags", [])
+        for tag in tags:
+            ntotal[tag] += 1
+
+        return_code = test_result.return_code
+        category = test_case.category
+        if return_code == 0:
+            passed += 1
+            for tag in tags:
+                npassed[tag] += 1
+        elif return_code != 0 and return_code != UNSUPPORTED_FEATURE:
+            failures += 1
+            for tag in tags:
+                nfailures[tag] += 1
+            test_case.add_failure_info(output=test_result.message)
+        elif return_code == UNSUPPORTED_FEATURE and category == REQUIRED:
+            failures += 1
+            for tag in tags:
+                nfailures[tag] += 1
+            test_case.add_failure_info(output=test_result.message)
+        elif category != REQUIRED and return_code == UNSUPPORTED_FEATURE:
+            unsupported += 1
+            for tag in tags:
+                nunsupported[tag] += 1
+            test_case.add_skipped_info("Unsupported")
+        else:
+            raise Exception(
+                "This is impossible, return_code: {}, category: "
+                "{}".format(return_code, category)
+            )
+        if report:
+            report.test_cases.append(test_case)
+    return (
+        total,
+        passed,
+        failures,
+        unsupported,
+        ntotal,
+        npassed,
+        nfailures,
+        nunsupported,
+        report,
+    )
+
+
+def main() -> int:
+    """Run the main program loop."""
     args = arg_parser().parse_args(sys.argv[1:])
     if "--" in args.args:
         args.args.remove("--")
+    if args.verbose:
+        _logger.setLevel(logging.DEBUG)
 
     # Remove test arguments with wrong syntax
     if args.testargs is not None:
@@ -365,23 +546,7 @@ def main():  # type: () -> int
         arg_parser().print_help()
         return 1
 
-    schema_resource = pkg_resources.resource_stream(__name__, "cwltest-schema.yml")
-    cache = {
-        "https://w3id.org/cwl/cwltest/cwltest-schema.yml": schema_resource.read().decode(
-            "utf-8"
-        )
-    }  # type: Optional[Dict[str, Union[str, Graph, bool]]]
-    (document_loader, avsc_names, _, _,) = schema_salad.schema.load_schema(
-        "https://w3id.org/cwl/cwltest/cwltest-schema.yml", cache=cache
-    )
-
-    if not isinstance(avsc_names, schema_salad.avro.schema.Names):
-        print(avsc_names)
-        return 1
-
-    tests, metadata = schema_salad.schema.load_and_validate(
-        document_loader, avsc_names, args.test, True
-    )
+    tests = load_and_validate_tests(args.test)
 
     failures = 0
     unsupported = 0
@@ -390,20 +555,15 @@ def main():  # type: () -> int
     report = junit_xml.TestSuite(suite_name, [])
 
     # the number of total tests, failured tests, unsupported tests and passed tests for each tag
-    ntotal = defaultdict(int)  # type: Dict[str, int]
-    nfailures = defaultdict(int)  # type: Dict[str, int]
-    nunsupported = defaultdict(int)  # type: Dict[str, int]
-    npassed = defaultdict(int)  # type: Dict[str, int]
-
     if args.only_tools:
         alltests = tests
         tests = []
-        for t in alltests:
+        for test in alltests:
             loader = schema_salad.ref_resolver.Loader({"id": "@id"})
-            cwl = loader.resolve_ref(t["tool"])[0]
+            cwl = loader.resolve_ref(test["tool"])[0]
             if isinstance(cwl, dict):
                 if cwl["class"] == "CommandLineTool":
-                    tests.append(t)
+                    tests.append(test)
             else:
                 raise Exception("Unexpected code path.")
 
@@ -411,32 +571,33 @@ def main():  # type: () -> int
         alltests = tests
         tests = []
         tags = args.tags.split(",")
-        for t in alltests:
-            ts = t.get("tags", [])
+        for test in alltests:
+            ts = test.get("tags", [])
             if any(tag in ts for tag in tags):
-                tests.append(t)
+                tests.append(test)
 
-    for t in tests:
-        if t.get("label"):
-            t["short_name"] = t["label"]
+    for test_entry in tests:
+        if test_entry.get("label"):
+            test_entry["short_name"] = test_entry["label"]
 
     if args.show_tags:
-        alltags = set()  # type: Set[str]
-        for t in tests:
-            ts = t.get("tags", [])
+        alltags: Set[str] = set()
+        for test in tests:
+            ts = test.get("tags", [])
             alltags |= set(ts)
         for tag in alltags:
             print(tag)
         return 0
 
     if args.l:
-        for i, t in enumerate(tests):
-            if t.get("short_name"):
+        for i, test in enumerate(tests):
+            if test.get("short_name"):
                 print(
-                    "[%i] %s: %s" % (i + 1, t["short_name"], t.get("doc", "").strip())
+                    "[%i] %s: %s"
+                    % (i + 1, test["short_name"], test.get("doc", "").strip())
                 )
             else:
-                print("[%i] %s" % (i + 1, t.get("doc", "").strip()))
+                print("[%i] %s" % (i + 1, test.get("doc", "").strip()))
 
         return 0
 
@@ -485,42 +646,17 @@ def main():  # type: () -> int
             for i in ntest
         ]
         try:
-            for i, job in zip(ntest, jobs):
-                test_result = job.result()
-                test_case = test_result.create_test_case(tests[i])
-                test_case.url = f"cwltest:{suite_name}#{i + 1}"
-                total += 1
-                tags = tests[i].get("tags", [])
-                for t in tags:
-                    ntotal[t] += 1
-
-                return_code = test_result.return_code
-                category = test_case.category
-                if return_code == 0:
-                    passed += 1
-                    for t in tags:
-                        npassed[t] += 1
-                elif return_code != 0 and return_code != UNSUPPORTED_FEATURE:
-                    failures += 1
-                    for t in tags:
-                        nfailures[t] += 1
-                    test_case.add_failure_info(output=test_result.message)
-                elif return_code == UNSUPPORTED_FEATURE and category == REQUIRED:
-                    failures += 1
-                    for t in tags:
-                        nfailures[t] += 1
-                    test_case.add_failure_info(output=test_result.message)
-                elif category != REQUIRED and return_code == UNSUPPORTED_FEATURE:
-                    unsupported += 1
-                    for t in tags:
-                        nunsupported[t] += 1
-                    test_case.add_skipped_info("Unsupported")
-                else:
-                    raise Exception(
-                        "This is impossible, return_code: {}, category: "
-                        "{}".format(return_code, category)
-                    )
-                report.test_cases.append(test_case)
+            (
+                total,
+                passed,
+                failures,
+                unsupported,
+                ntotal,
+                npassed,
+                nfailures,
+                nunsupported,
+                report,
+            ) = parse_results((job.result() for job in jobs), tests, report)
         except KeyboardInterrupt:
             for job in jobs:
                 job.cancel()

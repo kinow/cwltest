@@ -1,5 +1,5 @@
 import json
-from typing import Any, Dict, List, Optional, Set, Text
+from typing import Any, Dict, List, Optional, Set
 
 import junit_xml
 
@@ -7,19 +7,18 @@ REQUIRED = "required"
 
 
 class TestResult:
-
     """Encapsulate relevant test result data."""
 
     def __init__(
         self,
-        return_code,
-        standard_output,
-        error_output,
-        duration,
-        classname,
-        message="",
-    ):
-        # type: (int, Text, Text, float, Text, str) -> None
+        return_code: int,
+        standard_output: str,
+        error_output: str,
+        duration: float,
+        classname: str,
+        message: str = "",
+    ) -> None:
+        """Initialize this test result."""
         self.return_code = return_code
         self.standard_output = standard_output
         self.error_output = error_output
@@ -27,8 +26,8 @@ class TestResult:
         self.message = message
         self.classname = classname
 
-    def create_test_case(self, test):
-        # type: (Dict[Text, Any]) -> junit_xml.TestCase
+    def create_test_case(self, test: Dict[str, Any]) -> junit_xml.TestCase:
+        """Create a jUnit XML test case from this test result."""
         doc = test.get("doc", "N/A").strip()
         if test.get("tags"):
             category = ", ".join(test["tags"])

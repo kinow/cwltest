@@ -55,6 +55,7 @@ def test_unsupported_with_optional_tests():
         ),
     ]
     error_code, stdout, stderr = run_with_mock_cwl_runner(args)
+    stderr = re.sub(r" '?--outdir=[^ ]*", "", stderr)
     assert error_code == 0
     assert (
         "Test [1/1] Optional test that is unsupported{n}{n}"
