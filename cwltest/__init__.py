@@ -493,7 +493,7 @@ def parse_results(
             passed += 1
             for tag in tags:
                 npassed[tag] += 1
-        elif return_code != 0 and return_code != UNSUPPORTED_FEATURE:
+        elif return_code != UNSUPPORTED_FEATURE:
             failures += 1
             for tag in tags:
                 nfailures[tag] += 1
@@ -526,6 +526,32 @@ def parse_results(
         nunsupported,
         report,
     )
+
+
+def generate_badges(
+    badgedir: str, ntotal: Dict[str, int], npassed: Dict[str, int]
+) -> None:
+    """Generate the badge JSON files."""
+    os.mkdir(badgedir)
+    for t, v in ntotal.items():
+        percent = int((npassed[t] / float(v)) * 100)
+        if npassed[t] == v:
+            color = "green"
+        elif t == "required":
+            color = "red"
+        else:
+            color = "yellow"
+
+        with open(f"{badgedir}/{t}.json", "w") as out:
+            out.write(
+                json.dumps(
+                    {
+                        "subject": f"{t}",
+                        "status": f"{percent}%",
+                        "color": color,
+                    }
+                )
+            )
 
 
 def main() -> int:
@@ -667,26 +693,7 @@ def main() -> int:
             junit_xml.TestSuite.to_file(xml, [report])
 
     if args.badgedir:
-        os.mkdir(args.badgedir)
-        for t, v in ntotal.items():
-            percent = int((npassed[t] / float(v)) * 100)
-            if npassed[t] == v:
-                color = "green"
-            elif t == "required":
-                color = "red"
-            else:
-                color = "yellow"
-
-            with open(f"{args.badgedir}/{t}.json", "w") as out:
-                out.write(
-                    json.dumps(
-                        {
-                            "subject": f"{t}",
-                            "status": f"{percent}%",
-                            "color": color,
-                        }
-                    )
-                )
+        generate_badges(args.badgedir, ntotal, npassed)
 
     if failures == 0 and unsupported == 0:
         _logger.info("All tests passed")

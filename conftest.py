@@ -16,6 +16,7 @@ import py
 
 from cwltest import (
     DEFAULT_TIMEOUT,
+    generate_badges,
     run_test_plain,
     load_and_validate_tests,
     parse_results,
@@ -37,6 +38,11 @@ def pytest_addoption(parser: "PytestParser") -> None:
         dest="cwl_runner",
         default="cwl-runner",
         help="Name of the CWL runner to use.",
+    )
+    parser.addoption(
+        "--cwl-badgedir",
+        type=str,
+        help="Directory to store JSON file for badges.",
     )
 
 
@@ -154,3 +160,6 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         nunsupported,
         _,
     ) = parse_results(results, tests)
+    cwl_badgedir = session.config.getoption("cwl_badgedir")
+    if cwl_badgedir:
+        generate_badges(cwl_badgedir, ntotal, npassed)
