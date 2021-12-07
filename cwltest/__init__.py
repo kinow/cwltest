@@ -580,7 +580,6 @@ def main() -> int:
     suite_name, _ = os.path.splitext(os.path.basename(args.test))
     report = junit_xml.TestSuite(suite_name, [])
 
-    # the number of total tests, failured tests, unsupported tests and passed tests for each tag
     if args.only_tools:
         alltests = tests
         tests = []
