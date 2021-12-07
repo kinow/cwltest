@@ -1,6 +1,5 @@
 #!/usr/bin/env python
 """Run CWL descriptions with a cwl-runner, and look for expected output."""
-
 import argparse
 import json
 import logging
@@ -14,8 +13,18 @@ import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from shlex import quote
-from typing import cast, Any, Dict, Iterable, List, Optional, Set, Tuple, Union
-from typing_extensions import overload, Literal
+from typing import (
+    cast,
+    Any,
+    Dict,
+    Iterable,
+    List,
+    Optional,
+    Set,
+    Tuple,
+    Union,
+)
+from typing_extensions import overload, Literal, Protocol
 
 import junit_xml
 import pkg_resources  # part of setuptools
@@ -48,6 +57,10 @@ else:
     SUFFIX = "\n"
 
 templock = threading.Lock()
+
+
+class UnsupportedCWLFeature(Exception):
+    """Exception to be used by pytest_cwl_execute_test implementors."""
 
 
 def prepare_test_command(
@@ -84,19 +97,28 @@ def prepare_test_command(
     test_command.extend([f"--outdir={outdir}"])
     if not verbose:
         test_command.extend(["--quiet"])
+    toolpath, jobpath = prepare_test_paths(test, cwd)
+    test_command.extend([os.path.normcase(toolpath)])
+    if jobpath:
+        test_command.append(os.path.normcase(jobpath))
+    return test_command
 
+
+def prepare_test_paths(
+    test: Dict[str, str],
+    cwd: str,
+) -> Tuple[str, Optional[str]]:
+    """Determine the test path and the tool path."""
     cwd = schema_salad.ref_resolver.file_uri(cwd)
     toolpath = test["tool"]
     if toolpath.startswith(cwd):
         toolpath = toolpath[len(cwd) + 1 :]
-    test_command.extend([os.path.normcase(toolpath)])
 
     jobpath = test.get("job")
     if jobpath:
         if jobpath.startswith(cwd):
             jobpath = jobpath[len(cwd) + 1 :]
-        test_command.append(os.path.normcase(jobpath))
-    return test_command
+    return toolpath, jobpath
 
 
 def run_test(
@@ -128,6 +150,65 @@ def run_test(
         )
     sys.stderr.flush()
     return run_test_plain(vars(args), test, timeout, test_number)
+
+
+class TestRunner(Protocol):
+    """Protocol to type-check test runner functions via the pluggy hook."""
+
+    def __call__(
+        self, description: str, inputs: Optional[str]
+    ) -> List[Optional[Dict[str, Any]]]:
+        """Type signature for pytest_cwl_execute_test hook results."""
+        ...
+
+
+def run_test_hook(
+    args: Dict[str, Any],
+    test: Dict[str, str],
+    cwd: str,
+    hook: TestRunner,
+) -> TestResult:
+    """Run tests using a provided pytest_cwl_execute_test compatible runner."""
+    toolpath, jobpath = prepare_test_paths(test, cwd)
+    start_time = time.time()
+    outstr = outerr = ""
+    try:
+        out = hook(description=toolpath, inputs=jobpath)[0]
+    except UnsupportedCWLFeature as unsup:
+        duration = time.time() - start_time
+        outerr = str(unsup)
+        if REQUIRED not in test.get("tags", ["required"]):
+            return TestResult(
+                UNSUPPORTED_FEATURE, "", outerr, duration, args["classname"]
+            )
+        if test.get("should_fail", False):
+            return TestResult(0, "", outerr, duration, args["classname"])
+        return TestResult(1, "", outerr, duration, args["classname"], outerr)
+    duration = time.time() - start_time
+    outstr = json.dumps(out) if out is not None else "{}"
+    fail_message = ""
+    if test.get("should_fail", False):
+        _logger.warning("""Test failed: %s %s""", toolpath, jobpath)
+        _logger.warning(test.get("doc"))
+        _logger.warning("Returned zero but it should be non-zero")
+        return TestResult(1, outstr, outerr, duration, args["classname"])
+
+    try:
+        compare(test.get("output"), out)
+    except CompareFail as ex:
+        _logger.warning("""Test failed: %s %s""", toolpath, jobpath)
+        _logger.warning(test.get("doc"))
+        _logger.warning("Compare failure %s", ex)
+        fail_message = str(ex)
+
+    return TestResult(
+        (1 if fail_message else 0),
+        outstr,
+        outerr,
+        duration,
+        args["classname"],
+        fail_message,
+    )
 
 
 def run_test_plain(

@@ -47,7 +47,10 @@ setup(
         "console_scripts": [
             "cwltest=cwltest:main",
             "mock-cwl-runner=cwltest.tests.mock_cwl_runner:main",
-        ]
+        ],
+        "pytest11": [
+            "cwl = cwltest.plugin",
+        ],
     },
     zip_safe=True,
     cmdclass={"egg_info": tagger},
