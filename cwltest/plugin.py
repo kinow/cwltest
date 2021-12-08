@@ -20,8 +20,7 @@ import py
 from cwltest import (
     DEFAULT_TIMEOUT,
     generate_badges,
-    run_test_plain,
-    run_test_hook,
+    run_test_hook_or_plain,
     load_and_validate_tests,
     parse_results,
 )
@@ -89,32 +88,30 @@ class CWLItem(pytest.Item):
         """Execute using cwltest."""
         args = {
             "tool": self.config.getoption("cwl_runner"),
-            "args": self.config.getoption("cwl_args", default=None),
+            "args": self.config.getoption("cwl_args") or [],
             "testargs": None,
             "verbose": True,
             "classname": "",
         }
-        outdir = str(self.config._tmp_path_factory.mktemp(  # type: ignore[attr-defined]
-            self.spec.get("label", "unlabled_test")))
+        outdir = str(
+            self.config._tmp_path_factory.mktemp(  # type: ignore[attr-defined]
+                self.spec.get("label", "unlabled_test")
+            )
+        )
         hook = self.config.hook.pytest_cwl_execute_test
-        if hook:
-            result = run_test_hook(
-                args, self.spec, self.config.getoption("cwl_basedir"), outdir, hook
-            )
-        else:
-            result = run_test_plain(
-                args, self.spec, self.config.getoption("cwl_timeout")
-            )
+        result = run_test_hook_or_plain(
+            args,
+            self.spec,
+            self.config.getoption("cwl_basedir"),
+            self.config.getoption("cwl_timeout"),
+            outdir,
+            hook,
+        )
         cwl_results = self.config.cwl_results  # type: ignore[attr-defined]
         cast(List[Tuple[Dict[str, Any], TestResult]], cwl_results).append(
             (self.spec, result)
         )
-        if result.return_code != 0 and not self.spec.get("should_fail", False):
-            # unexpected failure
-            raise CWLTestException(self, result)
-
-        if result.return_code == 0 and self.spec.get("should_fail", False):
-            # missing failure
+        if result.return_code != 0:
             raise CWLTestException(self, result)
 
     def repr_failure(

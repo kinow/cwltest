@@ -127,8 +127,6 @@ def run_test(
     test_number: int,
     total_tests: int,
     timeout: int,
-    junit_verbose: Optional[bool] = False,
-    verbose: Optional[bool] = False,
 ) -> TestResult:
 
     if test.get("short_name"):
@@ -162,19 +160,23 @@ class TestRunner(Protocol):
         ...
 
 
-def run_test_hook(
+def run_test_hook_or_plain(
     args: Dict[str, Any],
     test: Dict[str, str],
     cwd: str,
+    timeout: int,
     outdir: str,
     hook: TestRunner,
 ) -> TestResult:
-    """Run tests using a provided pytest_cwl_execute_test compatible runner."""
+    """Run tests using a provided pytest_cwl_execute_test hook or the --cwl-runner."""
     toolpath, jobpath = prepare_test_paths(test, cwd)
     start_time = time.time()
     outstr = outerr = ""
     try:
-        out = hook(description=toolpath, outdir=outdir, inputs=jobpath)[0]
+        hook_out = hook(description=toolpath, outdir=outdir, inputs=jobpath)
+        if hook_out == []:
+            return run_test_plain(args, test, timeout)
+        out = hook_out[0]
     except UnsupportedCWLFeature as unsup:
         duration = time.time() - start_time
         outerr = str(unsup)
@@ -225,6 +227,9 @@ def run_test_plain(
     outdir = outstr = outerr = ""
     test_command: List[str] = []
     duration = 0.0
+    number = "?"
+    if test_number is not None:
+        number = str(test_number)
     try:
         process: Optional[subprocess.Popen[str]] = None
         cwd = os.getcwd()
@@ -280,8 +285,8 @@ def run_test_plain(
         return TestResult(1, outstr, outerr, duration, args["classname"], str(err))
     except (yamlscanner.ScannerError, TypeError) as err:
         _logger.error(
-            """Test %i failed: %s""",
-            test_number,
+            """Test %s failed: %s""",
+            number,
             " ".join([quote(tc) for tc in test_command]),
         )
         _logger.error(outstr)
@@ -289,15 +294,15 @@ def run_test_plain(
         _logger.error(outerr)
     except KeyboardInterrupt:
         _logger.error(
-            """Test %i interrupted: %s""",
-            test_number,
+            """Test %s interrupted: %s""",
+            number,
             " ".join([quote(tc) for tc in test_command]),
         )
         raise
     except subprocess.TimeoutExpired:
         _logger.error(
-            """Test %i timed out: %s""",
-            test_number,
+            """Test %s timed out: %s""",
+            number,
             " ".join([quote(tc) for tc in test_command]),
         )
         _logger.error(test.get("doc"))
@@ -324,8 +329,8 @@ def run_test_plain(
 
     if test.get("should_fail", False):
         _logger.warning(
-            """Test %i failed: %s""",
-            test_number,
+            """Test %s failed: %s""",
+            number,
             " ".join([quote(tc) for tc in test_command]),
         )
         _logger.warning(test.get("doc"))
@@ -336,8 +341,8 @@ def run_test_plain(
         compare(test.get("output"), out)
     except CompareFail as ex:
         _logger.warning(
-            """Test %i failed: %s""",
-            test_number,
+            """Test %s failed: %s""",
+            number,
             " ".join([quote(tc) for tc in test_command]),
         )
         _logger.warning(test.get("doc"))
@@ -747,8 +752,6 @@ def main() -> int:
                 i + 1,
                 len(tests),
                 args.timeout,
-                args.junit_verbose,
-                args.verbose,
             )
             for i in ntest
         ]
