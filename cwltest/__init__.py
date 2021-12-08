@@ -156,7 +156,7 @@ class TestRunner(Protocol):
     """Protocol to type-check test runner functions via the pluggy hook."""
 
     def __call__(
-        self, description: str, inputs: Optional[str]
+        self, description: str, outdir: str, inputs: Optional[str]
     ) -> List[Optional[Dict[str, Any]]]:
         """Type signature for pytest_cwl_execute_test hook results."""
         ...
@@ -166,6 +166,7 @@ def run_test_hook(
     args: Dict[str, Any],
     test: Dict[str, str],
     cwd: str,
+    outdir: str,
     hook: TestRunner,
 ) -> TestResult:
     """Run tests using a provided pytest_cwl_execute_test compatible runner."""
@@ -173,7 +174,7 @@ def run_test_hook(
     start_time = time.time()
     outstr = outerr = ""
     try:
-        out = hook(description=toolpath, inputs=jobpath)[0]
+        out = hook(description=toolpath, outdir=outdir, inputs=jobpath)[0]
     except UnsupportedCWLFeature as unsup:
         duration = time.time() - start_time
         outerr = str(unsup)

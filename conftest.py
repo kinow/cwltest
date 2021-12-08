@@ -10,13 +10,15 @@ from typing import Any, Dict, List, Optional
 from cwltest import UnsupportedCWLFeature, UNSUPPORTED_FEATURE
 
 
-def pytest_cwl_execute_test(description: str, inputs: str) -> Optional[Dict[str, Any]]:
+def pytest_cwl_execute_test(
+    description: str, outdir: str, inputs: str
+) -> Optional[Dict[str, Any]]:
     """Use the CWL reference runner (cwltool) to execute tests."""
     from cwltool import main
     from cwltool.errors import WorkflowException
 
     stdout = StringIO()
-    argsl: List[str] = ["--debug", description]
+    argsl: List[str] = ["--debug", f"--outdir={outdir}", description]
     if inputs:
         argsl.append(inputs)
     try:

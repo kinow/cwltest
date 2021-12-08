@@ -94,10 +94,12 @@ class CWLItem(pytest.Item):
             "verbose": True,
             "classname": "",
         }
+        outdir = str(self.config._tmp_path_factory.mktemp(  # type: ignore[attr-defined]
+            self.spec.get("label", "unlabled_test")))
         hook = self.config.hook.pytest_cwl_execute_test
         if hook:
             result = run_test_hook(
-                args, self.spec, self.config.getoption("cwl_basedir"), hook
+                args, self.spec, self.config.getoption("cwl_basedir"), outdir, hook
             )
         else:
             result = run_test_plain(
