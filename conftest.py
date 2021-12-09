@@ -5,14 +5,12 @@ Calls cwltool via Python, instead of a subprocess via `--cwl-runner cwltool`.
 """
 from io import StringIO
 import json
-from typing import Any, Dict, List, Optional
-
-from cwltest import UnsupportedCWLFeature, UNSUPPORTED_FEATURE
+from typing import Any, Dict, List, Optional, Tuple
 
 
 def pytest_cwl_execute_test(
     description: str, outdir: str, inputs: str
-) -> Optional[Dict[str, Any]]:
+) -> Tuple[int, Optional[Dict[str, Any]]]:
     """Use the CWL reference runner (cwltool) to execute tests."""
     from cwltool import main
     from cwltool.errors import WorkflowException
@@ -24,8 +22,6 @@ def pytest_cwl_execute_test(
     try:
         result = main.main(argsl=argsl, stdout=stdout)
     except WorkflowException:
-        return {}
+        return 1, {}
     out = stdout.getvalue()
-    if result == UNSUPPORTED_FEATURE:
-        raise UnsupportedCWLFeature(out)
-    return json.loads(out) if out else {}
+    return (result, json.loads(out) if out else {})
