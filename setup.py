@@ -44,13 +44,14 @@ setup(
     install_requires=install_requires,
     test_suite="tests",
     tests_require=["pytest<7"],
+    extras_require={"pytest-plugin": ["pytest"]},
     entry_points={
         "console_scripts": [
             "cwltest=cwltest:main",
             "mock-cwl-runner=cwltest.tests.mock_cwl_runner:main",
         ],
         "pytest11": [
-            "cwl = cwltest.plugin",
+            "cwl = cwltest.plugin [pytest-plugin]",
         ],
     },
     zip_safe=True,
